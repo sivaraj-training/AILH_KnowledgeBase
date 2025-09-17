@@ -120,7 +120,8 @@ def create_faiss_index(df):
             'category': row.get('Category', ''),
             'explanation': row.get('Explanation', ''),
             'reference_material': row.get('Reference Material', ''),
-            'session_recording': row.get('Session Recording', '')
+            'session_recording': row.get('Session Recording', ''),
+            'original_row': row  # Store the original row for direct access
         })
     
     # Create embeddings
@@ -153,6 +154,59 @@ def rag_search(query, top_k=3):
     
     return results
 
+# Function to handle date range queries directly from the dataframe
+def handle_date_range_query(query, df):
+    # Check for date range patterns
+    query_lower = query.lower()
+    
+    # Pattern for "July 2025" type queries
+    if 'july 2025' in query_lower:
+        if 'Date' in df.columns:
+            july_2025_data = df[
+                (df['Date'].dt.year == 2025) & 
+                (df['Date'].dt.month == 7)
+            ]
+            return july_2025_data
+        return pd.DataFrame()
+    
+    # Pattern for specific date queries
+    elif any(month in query_lower for month in ['january', 'february', 'march', 'april', 'may', 'june', 
+                                              'july', 'august', 'september', 'october', 'november', 'december']):
+        # Extract year and month from query
+        year_match = re.search(r'20\d{2}', query)
+        year = int(year_match.group()) if year_match else datetime.now().year
+        
+        month_dict = {
+            'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+            'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+        }
+        
+        month = None
+        for month_name, month_num in month_dict.items():
+            if month_name in query_lower:
+                month = month_num
+                break
+        
+        if month and 'Date' in df.columns:
+            month_data = df[
+                (df['Date'].dt.year == year) & 
+                (df['Date'].dt.month == month)
+            ]
+            return month_data
+        return pd.DataFrame()
+    
+    # Pattern for year queries
+    elif re.search(r'20\d{2}', query):
+        year_match = re.search(r'20\d{2}', query)
+        if year_match:
+            year = int(year_match.group())
+            if 'Date' in df.columns:
+                year_data = df[df['Date'].dt.year == year]
+                return year_data
+        return pd.DataFrame()
+    
+    return None
+
 # Load data and create index if not already loaded
 if not st.session_state.data_loaded:
     st.session_state.session_data = load_data()
@@ -160,32 +214,58 @@ if not st.session_state.data_loaded:
         st.session_state.faiss_index, st.session_state.document_store = create_faiss_index(st.session_state.session_data)
 
 # Function to format response with session data
-def format_response(results, query):
-    if not results:
+def format_response(results, query, is_date_range=False):
+    if not results and not is_date_range:
         return f"Sorry, I couldn't find information about '{query}' in the session materials."
     
-    response = f"I found {len(results)} result(s) related to '{query}':\n\n"
+    if is_date_range:
+        if results.empty:
+            return f"No sessions found for '{query}'."
+        
+        response = f"## Sessions in {query}:\n\n"
+        for _, row in results.iterrows():
+            response += f"### {row.get('Topic', 'No topic')}\n"
+            
+            date_val = row.get('Date', 'No date')
+            if hasattr(date_val, 'strftime'):
+                date_val = date_val.strftime('%Y-%m-%d')
+            response += f"**Date:** {date_val}\n"
+            
+            response += f"**Category:** {row.get('Category', 'No category')}\n\n"
+            response += f"**Explanation:** {row.get('Explanation', 'No explanation available')}\n\n"
+            
+            if 'Reference Material' in row and pd.notna(row['Reference Material']):
+                response += f"**Reference Material:** [Link]({row['Reference Material']})\n"
+            
+            if 'Session Recording' in row and pd.notna(row['Session Recording']):
+                response += f"**Session Recording:** [Link]({row['Session Recording']})\n"
+            
+            response += "---\n\n"
+        
+        return response
     
-    for result in results:
-        response += f"### {result.get('topic', 'No topic')}\n"
+    else:
+        response = f"I found {len(results)} result(s) related to '{query}':\n\n"
+        for result in results:
+            response += f"### {result.get('topic', 'No topic')}\n"
+            
+            date_val = result.get('date', 'No date')
+            if hasattr(date_val, 'strftime'):
+                date_val = date_val.strftime('%Y-%m-%d')
+            response += f"**Date:** {date_val}\n"
+            
+            response += f"**Category:** {result.get('category', 'No category')}\n\n"
+            response += f"**Explanation:** {result.get('explanation', 'No explanation available')}\n\n"
+            
+            if result.get('reference_material') and pd.notna(result['reference_material']):
+                response += f"**Reference Material:** [Link]({result['reference_material']})\n"
+            
+            if result.get('session_recording') and pd.notna(result['session_recording']):
+                response += f"**Session Recording:** [Link]({result['session_recording']})\n"
+            
+            response += "---\n\n"
         
-        date_val = result.get('date', 'No date')
-        if hasattr(date_val, 'strftime'):
-            date_val = date_val.strftime('%Y-%m-%d')
-        response += f"**Date:** {date_val}\n"
-        
-        response += f"**Category:** {result.get('category', 'No category')}\n\n"
-        response += f"**Explanation:** {result.get('explanation', 'No explanation available')}\n\n"
-        
-        if result.get('reference_material') and pd.notna(result['reference_material']):
-            response += f"**Reference Material:** [Link]({result['reference_material']})\n"
-        
-        if result.get('session_recording') and pd.notna(result['session_recording']):
-            response += f"**Session Recording:** [Link]({result['session_recording']})\n"
-        
-        response += "---\n\n"
-    
-    return response
+        return response
 
 # Function to get Gemini response with RAG
 def get_gemini_response(query, context):
@@ -289,33 +369,40 @@ if prompt := st.chat_input("Ask about session topics..."):
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # Process query using RAG
+    # Process query
     if not st.session_state.session_data.empty:
-        # Get relevant content using RAG
-        relevant_docs = rag_search(prompt, top_k=3)
+        # First check if this is a date range query
+        date_range_results = handle_date_range_query(prompt, st.session_state.session_data)
         
-        # Prepare context for Gemini
-        context = ""
-        if relevant_docs:
-            for doc in relevant_docs:
-                context += f"Topic: {doc.get('topic', '')}\n"
-                
-                date_val = doc.get('date', '')
-                if hasattr(date_val, 'strftime'):
-                    date_val = date_val.strftime('%Y-%m-%d')
-                context += f"Date: {date_val}\n"
-                
-                context += f"Category: {doc.get('category', '')}\n"
-                context += f"Explanation: {doc.get('explanation', '')}\n"
-                context += f"Reference Material: {doc.get('reference_material', '')}\n"
-                context += f"Session Recording: {doc.get('session_recording', '')}\n\n"
-        
-        # Get response from Gemini
-        with st.spinner("Thinking..."):
+        if date_range_results is not None:
+            # This is a date range query, handle it directly
+            response = format_response(date_range_results, prompt, is_date_range=True)
+        else:
+            # Use RAG for other types of queries
+            relevant_docs = rag_search(prompt, top_k=5)
+            
+            # Prepare context for Gemini
+            context = ""
             if relevant_docs:
-                response = get_gemini_response(prompt, context)
-            else:
-                response = format_response(relevant_docs, prompt)
+                for doc in relevant_docs:
+                    context += f"Topic: {doc.get('topic', '')}\n"
+                    
+                    date_val = doc.get('date', '')
+                    if hasattr(date_val, 'strftime'):
+                        date_val = date_val.strftime('%Y-%m-%d')
+                    context += f"Date: {date_val}\n"
+                    
+                    context += f"Category: {doc.get('category', '')}\n"
+                    context += f"Explanation: {doc.get('explanation', '')}\n"
+                    context += f"Reference Material: {doc.get('reference_material', '')}\n"
+                    context += f"Session Recording: {doc.get('session_recording', '')}\n\n"
+            
+            # Get response from Gemini
+            with st.spinner("Thinking..."):
+                if relevant_docs:
+                    response = get_gemini_response(prompt, context)
+                else:
+                    response = format_response(relevant_docs, prompt)
     else:
         response = "No session data available. Please ensure Excel files are in the /data directory."
     
