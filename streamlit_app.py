@@ -109,7 +109,10 @@ with st.sidebar:
     # Data information
     st.title("📊 Data Overview")
     if not st.session_state.session_data.empty:
-        st.write(f"Total sessions: {len(st.session_data['date'].dt.date.unique())}")
+        if not st.session_state.session_data.empty:
+            st.write(f"Total sessions: {len(st.session_state.session_data['date'].dt.date.unique())}")
+        else:
+            st.write("Total sessions: 0 (no data loaded)")
         st.write(f"Total topics: {len(st.session_data)}")
         
         # Show categories
