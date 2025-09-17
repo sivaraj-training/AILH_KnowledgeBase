@@ -5,6 +5,10 @@ import os
 import glob
 from datetime import datetime
 import google.generativeai as genai
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+import re
 
 # Page configuration
 st.set_page_config(
@@ -54,6 +58,17 @@ if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
 if "session_data" not in st.session_state:
     st.session_state.session_data = pd.DataFrame()
+if "faiss_index" not in st.session_state:
+    st.session_state.faiss_index = None
+if "document_store" not in st.session_state:
+    st.session_state.document_store = []
+
+# Initialize embedding model
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+embedding_model = load_embedding_model()
 
 # Function to load data from Excel files
 def load_data():
@@ -84,101 +99,102 @@ def load_data():
     else:
         return pd.DataFrame()
 
-# Load data if not already loaded
-if not st.session_state.data_loaded:
-    st.session_state.session_data = load_data()
+# Function to create FAISS index
+def create_faiss_index(df):
+    documents = []
+    for _, row in df.iterrows():
+        doc_text = f"Topic: {row.get('Topic', '')}. "
+        doc_text += f"Explanation: {row.get('Explanation', '')}. "
+        doc_text += f"Category: {row.get('Category', '')}. "
+        
+        date_val = row.get('Date', '')
+        if hasattr(date_val, 'strftime'):
+            doc_text += f"Date: {date_val.strftime('%Y-%m-%d')}. "
+        else:
+            doc_text += f"Date: {date_val}. "
+        
+        documents.append({
+            'text': doc_text,
+            'topic': row.get('Topic', ''),
+            'date': date_val,
+            'category': row.get('Category', ''),
+            'explanation': row.get('Explanation', ''),
+            'reference_material': row.get('Reference Material', ''),
+            'session_recording': row.get('Session Recording', '')
+        })
+    
+    # Create embeddings
+    texts = [doc['text'] for doc in documents]
+    embeddings = embedding_model.encode(texts)
+    
+    # Create FAISS index
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings.astype('float32'))
+    
+    return index, documents
 
-# Function to search session data
-def search_sessions(query, df):
-    results = pd.DataFrame()
-    query_lower = query.lower()
+# Function to search using RAG
+def rag_search(query, top_k=3):
+    if st.session_state.faiss_index is None or not st.session_state.document_store:
+        return []
     
-    # Search in Topic column
-    if 'Topic' in df.columns:
-        topic_matches = df[df['Topic'].str.lower().str.contains(query_lower, na=False)]
-        results = pd.concat([results, topic_matches])
+    # Embed the query
+    query_embedding = embedding_model.encode([query])
     
-    # Search in Explanation column
-    if 'Explanation' in df.columns:
-        explanation_matches = df[df['Explanation'].str.lower().str.contains(query_lower, na=False)]
-        results = pd.concat([results, explanation_matches])
+    # Search in FAISS index
+    distances, indices = st.session_state.faiss_index.search(query_embedding.astype('float32'), top_k)
     
-    # Search in Category column
-    if 'Category' in df.columns:
-        category_matches = df[df['Category'].str.lower().str.contains(query_lower, na=False)]
-        results = pd.concat([results, category_matches])
-    
-    # Remove duplicates
-    results = results.drop_duplicates()
+    # Retrieve relevant documents
+    results = []
+    for idx in indices[0]:
+        if idx < len(st.session_state.document_store):
+            results.append(st.session_state.document_store[idx])
     
     return results
 
-# Function to handle different query types
-def process_query(query, df):
-    # Check for date queries
-    if any(word in query.lower() for word in ['date', 'session', 'discussed on', 'discussed in']):
-        # Try to extract date information
-        try:
-            # Simple date extraction
-            date_str = None
-            for word in query.split():
-                try:
-                    date_str = word
-                    parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
-                    break
-                except:
-                    continue
-            
-            if date_str:
-                date_matches = df[df['Date'].dt.date == parsed_date.date()]
-                if not date_matches.empty:
-                    return date_matches
-        except:
-            pass
-    
-    # Default to general search
-    return search_sessions(query, df)
+# Load data and create index if not already loaded
+if not st.session_state.data_loaded:
+    st.session_state.session_data = load_data()
+    if not st.session_state.session_data.empty:
+        st.session_state.faiss_index, st.session_state.document_store = create_faiss_index(st.session_state.session_data)
 
 # Function to format response with session data
 def format_response(results, query):
-    if results.empty:
-        return f"Sorry, I couldn't find information about '{query}' in the session materials. If you'd like to explore more, [click here](https://chat.openai.com/?q={query.replace(' ', '+')})."
+    if not results:
+        return f"Sorry, I couldn't find information about '{query}' in the session materials."
     
     response = f"I found {len(results)} result(s) related to '{query}':\n\n"
     
-    for _, row in results.iterrows():
-        response += f"### {row.get('Topic', 'No topic')}\n"
+    for result in results:
+        response += f"### {result.get('topic', 'No topic')}\n"
         
-        date_val = row.get('Date', 'No date')
+        date_val = result.get('date', 'No date')
         if hasattr(date_val, 'strftime'):
             date_val = date_val.strftime('%Y-%m-%d')
         response += f"**Date:** {date_val}\n"
         
-        response += f"**Category:** {row.get('Category', 'No category')}\n\n"
-        response += f"**Explanation:** {row.get('Explanation', 'No explanation available')}\n\n"
+        response += f"**Category:** {result.get('category', 'No category')}\n\n"
+        response += f"**Explanation:** {result.get('explanation', 'No explanation available')}\n\n"
         
-        if 'Reference Material' in row and pd.notna(row['Reference Material']):
-            response += f"**Reference Material:** [Link]({row['Reference Material']})\n"
+        if result.get('reference_material') and pd.notna(result['reference_material']):
+            response += f"**Reference Material:** [Link]({result['reference_material']})\n"
         
-        if 'Session Recording' in row and pd.notna(row['Session Recording']):
-            response += f"**Session Recording:** [Link]({row['Session Recording']})\n"
+        if result.get('session_recording') and pd.notna(result['session_recording']):
+            response += f"**Session Recording:** [Link]({result['session_recording']})\n"
         
         response += "---\n\n"
     
     return response
 
-# Function to get Gemini response - UPDATED WITH LATEST MODEL
+# Function to get Gemini response with RAG
 def get_gemini_response(query, context):
     if not st.session_state.api_key:
         return "Please enter your Google Gemini API key in the sidebar to use this feature."
     
     try:
-        # Configure the API with the provided key
         genai.configure(api_key=st.session_state.api_key)
-        
-        # Use the latest available model - gemini-1.5-pro is recommended
-        # Alternative models: 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash'
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = f"""
         You are a helpful assistant. Use only the data below to answer the user's question.
@@ -189,6 +205,7 @@ def get_gemini_response(query, context):
         
         Do not generate any information not present in the data above.
         If the data doesn't contain information to answer the question, politely say so.
+        Keep your response concise and focused on the available data.
         """
         
         response = model.generate_content(
@@ -198,7 +215,11 @@ def get_gemini_response(query, context):
                 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
                 'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
                 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'
-            }
+            },
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=1000,
+                temperature=0.1
+            )
         )
         return response.text
     except Exception as e:
@@ -224,7 +245,6 @@ with st.sidebar:
     # Data information
     st.title("📊 Data Overview")
     if not st.session_state.session_data.empty:
-        # Check if Date column exists
         if 'Date' in st.session_state.session_data.columns:
             st.write(f"Total sessions: {len(st.session_state.session_data['Date'].dt.date.unique())}")
             st.write(f"Total topics: {len(st.session_state.session_data)}")
@@ -232,7 +252,6 @@ with st.sidebar:
             st.write("Total sessions: Column 'Date' not found")
             st.write(f"Total topics: {len(st.session_state.session_data)}")
         
-        # Show categories
         if 'Category' in st.session_state.session_data.columns:
             st.write("Categories:")
             for category in st.session_state.session_data['Category'].unique():
@@ -270,33 +289,33 @@ if prompt := st.chat_input("Ask about session topics..."):
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # Process query
+    # Process query using RAG
     if not st.session_state.session_data.empty:
-        results = process_query(prompt, st.session_state.session_data)
+        # Get relevant content using RAG
+        relevant_docs = rag_search(prompt, top_k=3)
         
         # Prepare context for Gemini
         context = ""
-        if not results.empty:
-            for _, row in results.iterrows():
-                context += f"Topic: {row.get('Topic', '')}\n"
+        if relevant_docs:
+            for doc in relevant_docs:
+                context += f"Topic: {doc.get('topic', '')}\n"
                 
-                date_val = row.get('Date', '')
+                date_val = doc.get('date', '')
                 if hasattr(date_val, 'strftime'):
                     date_val = date_val.strftime('%Y-%m-%d')
                 context += f"Date: {date_val}\n"
                 
-                context += f"Category: {row.get('Category', '')}\n"
-                context += f"Explanation: {row.get('Explanation', '')}\n"
-                context += f"Reference Material: {row.get('Reference Material', '')}\n"
-                context += f"Session Recording: {row.get('Session Recording', '')}\n\n"
+                context += f"Category: {doc.get('category', '')}\n"
+                context += f"Explanation: {doc.get('explanation', '')}\n"
+                context += f"Reference Material: {doc.get('reference_material', '')}\n"
+                context += f"Session Recording: {doc.get('session_recording', '')}\n\n"
         
         # Get response from Gemini
         with st.spinner("Thinking..."):
-            response = get_gemini_response(prompt, context)
-        
-        # If no specific data found, use the formatted response instead
-        if results.empty and "couldn't find" in response.lower():
-            response = format_response(results, prompt)
+            if relevant_docs:
+                response = get_gemini_response(prompt, context)
+            else:
+                response = format_response(relevant_docs, prompt)
     else:
         response = "No session data available. Please ensure Excel files are in the /data directory."
     
@@ -312,7 +331,6 @@ if not st.session_state.session_data.empty:
     st.divider()
     st.subheader("📚 All Session Topics")
     
-    # Allow filtering by category
     if 'Category' in st.session_state.session_data.columns:
         categories = st.session_state.session_data['Category'].unique()
         selected_category = st.selectbox("Filter by category:", ["All"] + list(categories))
@@ -324,7 +342,6 @@ if not st.session_state.session_data.empty:
     else:
         filtered_data = st.session_state.session_data
     
-    # Display topics
     for _, row in filtered_data.iterrows():
         date_str = row.get('Date', 'No date')
         if hasattr(date_str, 'strftime'):
