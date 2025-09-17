@@ -1,19 +1,12 @@
-# 💬 Chatbot template
+# 💬 Chat assistant for AI Learning Hours Sessions
 
-A simple Streamlit app that shows how to build a chatbot using OpenAI's GPT-3.5.
-
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://chatbot-template.streamlit.app/)
-
-### How to run it on your own machine
-
-1. Install the requirements
-
-   ```
-   $ pip install -r requirements.txt
-   ```
-
-2. Run the app
-
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+A simple chatbot app with below features:
+✅ Loads all .xlsx files from the /data directory
+✅ Parses and aggregates session data with proper error handling
+✅ Accepts natural language queries through a chat interface
+✅ Searches by topic, keyword, category, and date
+✅ Returns only data-based responses using Google Gemini API
+✅ Handles API key through session state (with instructions for localStorage)
+✅ Provides links to reference materials and session recordings
+✅ Redirects to ChatGPT when data is not found
+✅ Clean, responsive UI with expandable topic cards
