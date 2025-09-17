@@ -91,8 +91,6 @@ if not st.session_state.data_loaded:
 # Function to search session data
 def search_sessions(query, df):
     results = pd.DataFrame()
-    
-    # Convert query to lowercase for case-insensitive search
     query_lower = query.lower()
     
     # Search in Topic column
@@ -169,14 +167,18 @@ def format_response(results, query):
     
     return response
 
-# Function to get Gemini response
+# Function to get Gemini response - UPDATED WITH LATEST MODEL
 def get_gemini_response(query, context):
     if not st.session_state.api_key:
         return "Please enter your Google Gemini API key in the sidebar to use this feature."
     
     try:
+        # Configure the API with the provided key
         genai.configure(api_key=st.session_state.api_key)
-        model = genai.GenerativeModel('gemini-pro')
+        
+        # Use the latest available model - gemini-1.5-pro is recommended
+        # Alternative models: 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash'
+        model = genai.GenerativeModel('gemini-1.5-pro')
         
         prompt = f"""
         You are a helpful assistant. Use only the data below to answer the user's question.
@@ -189,7 +191,15 @@ def get_gemini_response(query, context):
         If the data doesn't contain information to answer the question, politely say so.
         """
         
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            safety_settings={
+                'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
+                'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
+                'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
+                'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'
+            }
+        )
         return response.text
     except Exception as e:
         return f"Error calling Gemini API: {str(e)}"
